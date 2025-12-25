@@ -97,6 +97,35 @@ module.exports.load = async function (router, db) {
       return res.status(400).json({ error: "Invalid email format" });
     }
 
+    // Heliactyl Anti-Spam Pattern Detection
+    if (settings.api.client.allow.anti_spam_detection !== false) {
+      const emailLocalPart = email.split('@')[0];
+      
+      // (1) Block long composite name patterns (FirstnameMiddleLastnameNumber)
+      const nameComboRegex = /^[A-Z][a-z]+[A-Z][a-z]+[A-Z][a-z]+[0-9]{2,4}$/;
+      if (nameComboRegex.test(username) || nameComboRegex.test(emailLocalPart)) {
+        return res.status(400).json({ error: "Suspicious pattern detected [HX-01]" });
+      }
+
+      // (2) Block hyphenated "Adjective-NounNumber" patterns (Quick-WittedTamale90)
+      const hyphenNameRegex = /^[A-Z][a-z]+(-[A-Z][a-z]+){1,3}[0-9]{1,3}$/;
+      if (hyphenNameRegex.test(username) || hyphenNameRegex.test(emailLocalPart)) {
+        return res.status(400).json({ error: "Suspicious pattern detected [HX-02]" });
+      }
+
+      // (3) Block random lowercase gibberish (e.g., iqjvefy, znlpxn8r)
+      const gibberishRegex = /^[a-z0-9]{6,10}$/;
+      if (gibberishRegex.test(username) && !username.match(/[aeiou]/)) {
+        return res.status(400).json({ error: "Suspicious pattern detected [HX-03]" });
+      }
+
+      // (4) Block known spam suffixes or multiple capital joins
+      const mixedCapsRegex = /[A-Z][a-z]+[A-Z][a-z]+/;
+      if (mixedCapsRegex.test(username) && username.match(/[0-9]{2,4}/)) {
+        return res.status(400).json({ error: "Suspicious pattern detected [HX-04]" });
+      }
+    }
+
     // Check password strength
     if (password.length < 12 || !/[A-Z]/.test(password) || !/[a-z]/.test(password) || !/[0-9]/.test(password) || !/[^A-Za-z0-9]/.test(password)) {
       return res.status(400).json({ error: "Password must be at least 12 characters long and contain uppercase, lowercase, number, and special character" });
@@ -204,7 +233,7 @@ module.exports.load = async function (router, db) {
 
     discordLog(
       "sign up",
-      `${username} signed up to the dashboard in local OAuth2!`
+      `${username} (${userId}) signed up to the dashboard in local OAuth2! `
     );
 
     res.status(201).json({ message: "User registered successfully" });
@@ -269,6 +298,36 @@ module.exports.load = async function (router, db) {
     if (settings.api.client.oauth2.ip["duplicate check"] == true && ip !== "127.0.0.1" && ip !== "::1" && ip !== "::ffff:127.0.0.1" && !ip.startsWith("192.168.")) {
       const userIP = await db.get(`ipuser-${ip}`);
       const bypassFlag = await db.get(`antialt-bypass-${userinfo.id}`) || false;
+      
+      // Check if the IP is associated with a banned account
+      if (userIP && userIP !== userinfo.id) {
+        const linkedUserBanStatus = await db.get(`banned-${userIP}`);
+        if (linkedUserBanStatus) {
+          // Auto-ban the current user if their IP is linked to a banned account
+          await db.set(`banned-${userinfo.id}`, {
+            reason: `Auto-banned: IP linked to banned account (${userIP})`,
+            bannedAt: new Date().toISOString(),
+            bannedBy: 'system-antialt'
+          });
+          
+          await discordLog(
+            "anti-alt",
+            `User ID: \`${userinfo.id}\` was AUTO-BANNED because their IP is linked to banned account: \`${userIP}\`.`,
+            [
+              { name: "IP Address", value: ip, inline: true },
+              { name: "Linked Banned User", value: userIP, inline: true }
+            ],
+            false
+          );
+          
+          const theme = await getPages();
+          return res.status(500).render(theme.settings.errors.banned, {
+            settings,
+            reason: `Your account has been automatically banned because your IP is linked to a banned account.`
+          });
+        }
+      }
+      
       if (userIP && userIP !== userinfo.id && !bypassFlag) {
         // Send webhook notifications
         await discordLog(
@@ -306,7 +365,7 @@ module.exports.load = async function (router, db) {
 
     discordLog(
       "sign in",
-      `${userinfo.username} signed in to the dashboard in local OAuth2!`
+      `${userinfo.username} (${userinfo.id}) signed in to the dashboard in local OAuth2!`
     );
 
     res.json({ message: "Login successful" });

@@ -60,7 +60,6 @@ class Store {
   }
 
   async purchaseRenewalBypass(userId) {
-    // Check user's balance
     const userCoins = await this.db.get(`coins-${userId}`) || 0;
     
     if (userCoins < RENEWAL_BYPASS_PRICE) {
@@ -153,24 +152,59 @@ module.exports.load = function(router, db) {
   const store = new Store(db); 
 
 class StoreController {
+// Status check
+  static async checkRenewalBypassStatus(req, res) {
+    try {
+      if (!req.session.userinfo) {
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
+
+      if (settings.api.client.coins.store.renewalbypass.enabled === false) {
+        return res.json({
+          enabled: false,
+          hasRenewalBypass: false,
+          price: 0,
+          canAfford: false,
+          currentBalance: 0
+        });
+      }
+
+      const userId = req.session.userinfo.id;
+      const hasRenewalBypass = (await db.get(`renewbypass-${userId}`)) || false;
+      const currentBalance = await db.get(`coins-${userId}`) || 0;
+
+      res.json({
+        enabled: true,
+        hasRenewalBypass,
+        price: RENEWAL_BYPASS_PRICE,
+        canAfford: currentBalance >= RENEWAL_BYPASS_PRICE,
+        currentBalance
+      });
+    } catch (error) {
+      console.error('[ERROR] Failed to fetch renewal bypass status:', error);
+      return this.handleUnexpectedError(res, error);
+    }
+  }
+
   static async handleRenewalBypassPurchase(req, res) {
     try {
       if (!req.session.userinfo) {
         return res.status(401).json({ error: 'Unauthorized' });
       }
 
+      if (settings.api.client.coins.store.renewalbypass.enabled === false) {
+        return res.status(400).json({ error: 'Renewal bypass is currently disabled.' });
+      }
+
       const userId = req.session.userinfo.id;
 
-      // Check if user already has renewal bypass
       const hasRenewalBypass = await db.get(`renewbypass-${userId}`);
       if (hasRenewalBypass) {
         return res.status(400).json({ error: 'Renewal bypass already purchased' });
       }
 
-      // Get user's current coins
       const userCoins = await db.get(`coins-${userId}`) || 0;
       
-      // Check if user has enough coins
       if (userCoins < RENEWAL_BYPASS_PRICE) {
         return res.status(402).json({
           error: 'Insufficient funds',
@@ -184,7 +218,6 @@ class StoreController {
       await db.set(`coins-${userId}`, newBalance);
       await db.set(`renewbypass-${userId}`, true);
 
-      // Log the purchase
       const purchase = await store.logPurchase(userId, 'renewal_bypass', 1, RENEWAL_BYPASS_PRICE);
 
       discordLog(`renewal bypass`, `${req.session.userinfo.username} purchased renewal bypass for ${RENEWAL_BYPASS_PRICE} coins.`);
@@ -199,28 +232,6 @@ class StoreController {
     } catch (error) {
       console.error('[ERROR] Renewal bypass purchase failed:', error);
       return res.status(500).json({ error: 'Internal server error' });
-    }
-  }
-
-  static async checkRenewalBypassStatus(req, res) {
-    try {
-      if (!req.session.userinfo) {
-        return res.status(401).json({ error: 'Unauthorized' });
-      }
-
-      const userId = req.session.userinfo.id;
-      const hasRenewalBypass = (await db.get(`renewbypass-${userId}`)) || false;
-      const currentBalance = await db.get(`coins-${userId}`) || 0;
-
-      res.json({
-        hasRenewalBypass,
-        price: RENEWAL_BYPASS_PRICE,
-        canAfford: currentBalance >= RENEWAL_BYPASS_PRICE,
-        currentBalance
-      });
-    } catch (error) {
-      console.error('[ERROR] Failed to fetch renewal bypass status:', error);
-      return this.handleUnexpectedError(res, error);
     }
   }
 
@@ -293,13 +304,73 @@ class StoreController {
     }
   });
 
+  // Get usage history endpoint
+  router.get('/store/usage', authMiddleware, async (req, res) => {
+    try {
+      const userId = req.session.userinfo.id;
+      const { days } = req.query;
+    
+      // Get the users' resources to edit
+      const resources = {
+          ram: 0,
+          disk: 0,
+          cpu: 0,
+          servers: 0
+        };
+      // Get the purchase history of the user
+      const history = await db.get(`purchases-${userId}`) || [];
+    
+      if (history.length > 0) {
+        let purchaseHistory = history;
+
+        // Filter by date if not 'all'
+        if (days && days !== 'all') {
+          const dayCount = parseInt(days);
+          const date = new Date();
+          const sorterDate = new Date(date.valueOf());
+          sorterDate.setDate(sorterDate.getDate() - dayCount);
+          purchaseHistory = history.filter(h => h.timestamp >= sorterDate.getTime());
+        }
+        
+        purchaseHistory.forEach((record) => {
+          if (record.resourceType === "renewal_bypass") return;
+          // Gets the amount of resources to increase
+          const resourceValue = RESOURCE_MULTIPLIERS[record.resourceType] * record.amount;
+          const resourceTotal = resources[record.resourceType] + resourceValue;
+        
+          // Sets the increased amount
+          const resourceType = resources[record.resourceType] = resourceTotal;
+        });
+      };
+      res.json(resources);
+    } catch(error) {
+      console.error('Failed to fetch user usage data: \n' + error);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  });
+
   // Get purchase history endpoint
   router.get('/store/history', authMiddleware, async (req, res) => {
     try {
       const userId = req.session.userinfo.id;
+      const { days } = req.query;
       const history = await db.get(`purchases-${userId}`) || [];
+      let purchaseHistory = history;
       
-      res.json(history);
+      // Filter by date if not 'all'
+      if (history.length > 0 && days && days !== 'all') {
+        const dayCount = parseInt(days);
+        const date = new Date();
+        const sorterDate = new Date(date.valueOf());
+        sorterDate.setDate(sorterDate.getDate() - dayCount);
+        
+        purchaseHistory = history.filter(h => h.timestamp >= sorterDate.getTime());
+      }
+      
+      // Sort by newest first
+      purchaseHistory.sort((a, b) => b.timestamp - a.timestamp);
+      
+      res.json(purchaseHistory);
     } catch (error) {
       console.error('[ERROR] Failed to fetch purchase history:', error);
       res.status(500).json({ error: 'Internal server error' });

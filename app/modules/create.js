@@ -38,6 +38,7 @@ module.exports.load = async function(router, db) {
 router.get("/updateinfo", authMiddleware, async (req, res) => {
     try {
         // Get user's package and extra resources
+        const PterodactylUser = await getPteroUser(req.session.userinfo.id, db);
         const packagename = await db.get("package-" + req.session.userinfo.id);
         const package = settings.api.client.packages.list[packagename ? packagename : settings.api.client.packages.default];
         const extra = await db.get("extra-" + req.session.userinfo.id) || {
@@ -146,11 +147,12 @@ router.get("/server/create", authMiddleware, async (req, res) => {
             let ram2 = 0;
             let disk2 = 0;
             let cpu2 = 0;
-            let servers2 = req.session.pterodactyl.relationships.servers.data.length;
-            for (let i = 0, len = req.session.pterodactyl.relationships.servers.data.length; i < len; i++) {
-                ram2 += req.session.pterodactyl.relationships.servers.data[i].attributes.limits.memory;
-                disk2 += req.session.pterodactyl.relationships.servers.data[i].attributes.limits.disk;
-                cpu2 += req.session.pterodactyl.relationships.servers.data[i].attributes.limits.cpu;
+            const serversData = req.session.pterodactyl?.relationships?.servers?.data || [];
+            let servers2 = serversData.length;
+            for (let i = 0, len = serversData.length; i < len; i++) {
+                ram2 += serversData[i].attributes.limits.memory;
+                disk2 += serversData[i].attributes.limits.disk;
+                cpu2 += serversData[i].attributes.limits.cpu;
             }
 
             if (servers2 >= package.servers + extra.servers) {

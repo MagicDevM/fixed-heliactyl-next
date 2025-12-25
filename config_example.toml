@@ -152,6 +152,7 @@ is_default = false
   new_users = true
   change_password = true
   over_resources_suspend = false
+  anti_spam_detection = true # Enable anti-spam pattern detection on registration (blocks suspicious usernames/emails)
 
     [api.client.allow.server]
     create = true
@@ -414,7 +415,7 @@ free = true
     enabled = true
 
       [api.client.coins.store.renewalbypass]
-      enabled = true # implementation soon
+      enabled = true
       cost = 3500
 
       [api.client.coins.store.ram]
@@ -472,6 +473,14 @@ enabled = true
       "premium_plan_1month",
       "steam_gift_card_10"
   ]
+
+# ------------------------------------------------------
+# Renewal Settings
+# ------------------------------------------------------
+[renewal]
+renewal_period = 48
+warning_threshold = 24
+check_interval = 5
 
 # ------------------------------------------------------
 # Update Configuration
